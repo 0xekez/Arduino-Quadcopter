@@ -1,13 +1,8 @@
-/*
- * MPU
- */
-
+#include <Arduino.h>
+#include <Adafruit_BLE.h>
+#include <Adafruit_BluefruitLE_SPI.h>
 #include "I2Cdev.h"
 #include "MPU6050_6Axis_MotionApps20.h"
-//#include "MPU6050.h" // not necessary if using MotionApps include file
-
-// Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
-// is used in I2Cdev.h
 #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
     #include "Wire.h"
 #endif
@@ -34,64 +29,56 @@ VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measure
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+//TOTAL ANGLES
+float total_angle_x, total_angle_y;
 
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
 void dmpDataReady() {
     mpuInterrupt = true;
 }
 
-/*
- * PID
- */
+#include "BluefruitConfig.h"
 
-# define MOTOR_LF 1
-# define MOTOR_LB 2
-# define MOTOR_RF 3
-# define MOTOR_RB 4
+#include <Wire.h>
+// Connect Vin to 3V DC
+// Connect GND to ground
+// Connect SCL to I2C clock pin 
+// Connect SDA to I2C data pin
 
-//TOTAL ANGLES
-float total_angle_x, total_angle_y;
-/*
- * we need two sets of pid constants,
- * one for pitch (x) and one for roll (y)
- */
-float roll_kp = 1;
-float pitch_kp = 1;
-float roll_ki = 0;
-float pitch_ki = 0;
-float roll_kd = 0;
-float pitch_kd =0;
+//Name your RC here
+String BROADCAST_NAME = "yeet";
 
-// vars to hold actual vals of pid
-float roll_pid_p=0;
-float roll_pid_i=0;
-float roll_pid_d=0;
-float pitch_pid_p=0;
-float pitch_pid_i=0;
-float pitch_pid_d=0;
-float roll_pid, pitch_pid;
+String BROADCAST_CMD = String("AT+GAPDEVNAME=" + BROADCAST_NAME);
 
-// vars for holding error vals for PID
-float pitch_error, roll_error;
-float pitch_prev_error, roll_prev_error;
+Adafruit_BluefruitLE_SPI ble(BLUEFRUIT_SPI_CS, BLUEFRUIT_SPI_IRQ, BLUEFRUIT_SPI_RST);
 
-// store time information
-float elapsedTime, time, timePrev;
+// A small helper
+void error(const __FlashStringHelper*err) {
+  Serial.println(err);
+  while (1);
+}
 
-/*
- * CONTROLLER INPUTS
- */
-float roll_desired_angle;
-float pitch_desired_angle;
-float input_throttle;
+// function prototypes over in packetparser.cpp
+uint8_t readPacket(Adafruit_BLE *ble, uint16_t timeout);
+float parsefloat(uint8_t *buffer);
+void printHex(const uint8_t * data, const uint32_t numBytes);
 
-/*
- * MOTOR VALUES
- */
-float motor_l_f, motor_l_b, motor_r_f, motor_r_b;
- 
+// the packet buffer
+extern uint8_t packetbuffer[];
 
-void setup() {
+char buf[60];
+
+
+/**************************************************************************/
+/*!
+    @brief  Sets up the HW and the BLE module (this function is called
+            automatically on startup)
+*/
+/**************************************************************************/
+void setup(void) {
+  Serial.begin(115200);
+  Serial.println(F("Adafruit Bluefruit Robot Controller Example"));
+  Serial.println(F("-----------------------------------------"));
     // join I2C bus (I2Cdev library doesn't do this automatically)
     #if I2CDEV_IMPLEMENTATION == I2CDEV_ARDUINO_WIRE
         Wire.begin();
@@ -103,7 +90,6 @@ void setup() {
     // initialize serial communication
     // (115200 chosen because it is required for Teapot Demo output, but it's
     // really up to you depending on your project)
-    Serial.begin(9600);
     while (!Serial); // wait for Leonardo enumeration, others continue immediately
 
     // initialize device
@@ -157,25 +143,14 @@ void setup() {
         Serial.println(F(")"));
     }
 
+  /* Initialize the module */
+  BLEsetup();
 }
 
-void loop() {
+void loop(void)
+{
   // if programming failed, don't try to do anything
     if (!dmpReady) return;
-
-    // wait for MPU interrupt or extra packet(s) available
-    while (!mpuInterrupt && fifoCount < packetSize) {
-        // other program behavior stuff here
-        // .
-        // .
-        // .
-        // if you are really paranoid you can frequently test in between other
-        // stuff to see if mpuInterrupt is true, and if so, "break;" from the
-        // while() loop to immediately process the MPU data
-        // .
-        // .
-        // .
-    }
 
     // reset interrupt flag and get INT_STATUS byte
     mpuInterrupt = false;
@@ -206,110 +181,134 @@ void loop() {
         mpu.dmpGetQuaternion(&q, fifoBuffer);
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-//        Serial.print("ypr\t");
-//        Serial.print(ypr[0] * 180/M_PI);
-//        Serial.print("\t");
-//        Serial.print(ypr[1] * 180/M_PI);
-//        Serial.print("\t");
-//        Serial.println(ypr[2] * 180/M_PI);
         
       // pitch = x
       // roll = y
       total_angle_x = ypr[1]* 180/M_PI;
       total_angle_y = ypr[2]* 180/M_PI;
+    }
+  // read new packet data
+  uint8_t len = readPacket(&ble, BLE_READPACKET_TIMEOUT);
 
-      /*
-       * PID
-       */
-      timePrev = time;
-      time = millis();
-      // in seconds
-      elapsedTime = (time-timePrev)/1000;
-      
-      //TODO - update with bluetooth control
-      roll_desired_angle = 0;
-      pitch_desired_angle = 0;
-      input_throttle = 100;
+  readController();
 
-      roll_error = total_angle_y - roll_desired_angle;
-      pitch_error = total_angle_x - pitch_desired_angle;
-      //Serial.println(roll_error);
+  //for the plotter
 
-      roll_pid_p = roll_error*roll_kp;
-      pitch_pid_p = pitch_error*pitch_kp;
-    // we only want to use the intergral if we are within +- 5 degrees
-    if (-5 < roll_error < 5){
-      roll_pid_i = roll_pid_i+(roll_ki*roll_error);
-    }
-    if (-5 < pitch_error < 5){
-      pitch_pid_i = pitch_pid_i+(pitch_ki*pitch_error);
-    }
-    
-    roll_pid_d = roll_kd*((roll_error - roll_prev_error)/elapsedTime);
-    pitch_pid_d = pitch_kd*((pitch_error - pitch_prev_error)/elapsedTime);
-    
-    // final values are the sum of it all
-    roll_pid = roll_pid_p + roll_pid_i + roll_pid_d;
-    pitch_pid = pitch_pid_p + pitch_pid_i + pitch_pid_d;
-    
-    /*
-     * there is some need for tuning here:
-     * in a nutshell, we don't want PID values to be too big (I think)
-     * so we constrain the values.
-     * here, im constraining them to +- 75, but that should probably change in tuning.
-     */
-     if (roll_pid < -75){
-      roll_pid = -75;
-     }
-     if (roll_pid > 75){
-      roll_pid = 75;
-     }
-    if (pitch_pid < -75){
-      pitch_pid = -75;
-    }
-    if (pitch_pid > 75){
-      pitch_pid = 75;
-    }
-    
-    /*
-     * calculate the amount of thrust to give to each motor
-     */
-    motor_r_f  = input_throttle - roll_pid - pitch_pid;
-    motor_r_b  = input_throttle - roll_pid + pitch_pid;
-    motor_l_b  = input_throttle + roll_pid + pitch_pid;
-    motor_l_f  = input_throttle + roll_pid - pitch_pid;
-   /*
-   * once, again, just to be safe, we constrain all these values to be within 0 and 255 inclusive
-   * that is the range of values that our motors can be throttled to
-   */
-    motor_r_f  = constrain(motor_r_f, 0, 255);
-    motor_r_b  = constrain(motor_r_b, 0, 255);
-    motor_l_b  = constrain(motor_l_b, 0, 255);
-    motor_l_f  = constrain(motor_l_f, 0, 255);
-    Serial.print("lf :");
-    Serial.print(motor_l_f);
-    Serial.print("\t");
-    Serial.print("lb: ");
-    Serial.print(motor_l_b);
-    Serial.print("\t");
-    Serial.print("rf: ");
-    Serial.print(motor_r_f);
-    Serial.print("\t");
-    Serial.print("rb: ");
-    Serial.print(motor_r_b);
-    Serial.println();
-      
-//      drive_motor(MOTOR_RF, motor_r_f);
-//      drive_motor(MOTOR_RB, motor_r_b);
-//      drive_motor(MOTOR_LF, motor_l_f);
-//      drive_motor(MOTOR_LB, motor_l_b);
-      
-      // store previous errors
-      roll_prev_error = roll_error;
-      pitch_prev_error = pitch_error;
-    }
+  //for the plotter
+  ble.print("angle_x: "); 
+  ble.print(total_angle_x); 
+  ble.print("\t");
+  
+  ble.print("\tangle_y: "); 
+  ble.println(total_angle_y); 
+
 }
 
-void drive_motor(int gate, int value){
-  analogWrite(gate, value);
+
+bool isMoving = false;
+unsigned long lastPress = 0;
+
+bool readController(){
+  uint8_t maxspeed;
+
+ // Buttons
+  if (packetbuffer[1] == 'B') {
+
+    uint8_t buttnum = packetbuffer[2] - '0';
+    boolean pressed = packetbuffer[3] - '0';
+
+    if (pressed) {
+      if(buttnum == 1){
+        ble.print('hello world!');
+      }
+      
+      if(buttnum == 2){
+      }
+
+      if(buttnum == 3){
+      }
+
+      if(buttnum == 4){
+        
+      }
+
+      if(buttnum == 5){
+        ble.println("Forward");
+      }
+      
+      if(buttnum == 6){
+        ble.println("Backward");        
+      }
+      
+      if(buttnum == 7){
+        ble.println("Left");
+      }
+      
+      if(buttnum == 8){
+        ble.println("Right");        
+      }
+
+      lastPress = millis();
+  }
+}
+}
+
+void BLEsetup(){
+  Serial.print(F("Initialising the Bluefruit LE module: "));
+
+  if ( !ble.begin(VERBOSE_MODE) )
+  {
+    error(F("Couldn't find Bluefruit, make sure it's in CoMmanD mode & check wiring?"));
+  }
+  Serial.println( F("OK!") );
+
+  /* Perform a factory reset to make sure everything is in a known state */
+  Serial.println(F("Performing a factory reset: "));
+  if (! ble.factoryReset() ){
+       error(F("Couldn't factory reset"));
+  }
+
+  //Convert the name change command to a char array
+  BROADCAST_CMD.toCharArray(buf, 60);
+
+  //Change the broadcast device name here!
+  if(ble.sendCommandCheckOK(buf)){
+    Serial.println("name changed");
+  }
+  delay(250);
+
+  //reset to take effect
+  if(ble.sendCommandCheckOK("ATZ")){
+    Serial.println("resetting");
+  }
+  delay(250);
+
+  //Confirm name change
+  ble.sendCommandCheckOK("AT+GAPDEVNAME");
+
+  /* Disable command echo from Bluefruit */
+  ble.echo(false);
+
+  Serial.println("Requesting Bluefruit info:");
+  /* Print Bluefruit information */
+  ble.info();
+
+  Serial.println(F("Please use Adafruit Bluefruit LE app to connect in Controller mode"));
+  Serial.println(F("Then activate/use the sensors, color picker, game controller, etc!"));
+  Serial.println();
+
+  ble.verbose(false);  // debug info is a little annoying after this point!
+
+  /* Wait for connection */
+  while (! ble.isConnected()) {
+      delay(500);
+  }
+
+  Serial.println(F("*****************"));
+
+  // Set Bluefruit to DATA mode
+  Serial.println( F("Switching to DATA mode!") );
+  ble.setMode(BLUEFRUIT_MODE_DATA);
+
+  Serial.println(F("*****************"));
 }
