@@ -44,10 +44,10 @@ void dmpDataReady() {
  * PID
  */
 
-# define MOTOR_LF 1
-# define MOTOR_LB 2
-# define MOTOR_RF 3
-# define MOTOR_RB 4
+# define MOTOR_LF 6
+# define MOTOR_LB 11
+# define MOTOR_RF 10
+# define MOTOR_RB 9
 
 //TOTAL ANGLES
 float total_angle_x, total_angle_y;
@@ -235,7 +235,7 @@ void loop() {
       //TODO - update with bluetooth control
       roll_desired_angle = 0;
       pitch_desired_angle = 0;
-      input_throttle = 100;
+      input_throttle = 200;
 
       roll_error = total_angle_y - roll_desired_angle;
       pitch_error = total_angle_x - pitch_desired_angle;
@@ -305,10 +305,10 @@ void loop() {
     Serial.print(motor_r_b);
     Serial.println();
       
-//      drive_motor(MOTOR_RF, motor_r_f);
-//      drive_motor(MOTOR_RB, motor_r_b);
-//      drive_motor(MOTOR_LF, motor_l_f);
-//      drive_motor(MOTOR_LB, motor_l_b);
+      drive_motor(MOTOR_RF, motor_r_f);
+      drive_motor(MOTOR_RB, motor_r_b);
+      drive_motor(MOTOR_LF, motor_l_f);
+      drive_motor(MOTOR_LB, motor_l_b);
       
       // store previous errors
       roll_prev_error = roll_error;
